@@ -39,6 +39,9 @@ namespace cAlgo
         [Parameter("Martingale Overrides Take Profit?", DefaultValue = true)]
         public bool TPOverridenFlag { get; set; }
 
+        [Parameter("Max Martingale attempts", DefaultValue = 4)]
+        public int MaxMartingale { get; set; }
+
         [Parameter("- - - Price Action Variables - - -", DefaultValue = "")]
         public string DoNothing02 { get; set; }
 
@@ -104,6 +107,7 @@ namespace cAlgo
         private bool TrailingStopFlag = false;
         private bool CycleOverridenFlag = false;
         private bool FirstPositionFlag = true;
+        private int CurrentMartingale = 0;
         private string volume_file;
         private DateTime InitialTime;
         private DateTime CycleEndTime;
@@ -222,6 +226,7 @@ namespace cAlgo
 
         protected override void OnTick()
         {
+            Print(CurrentMartingale);
             // Closes positions at the end of the week
             if (Server.Time.DayOfWeek == DayOfWeek.Friday && Server.Time.TimeOfDay >= EndOfWeek && FridayShutdownFlag == true)
             {
@@ -268,7 +273,7 @@ namespace cAlgo
                         CloseOpenPosition();
 
                         // If the TP was never reached, the position volume is multiplied.
-                        if (TakeProfitFlag == true)
+                        if (TakeProfitFlag == true && CurrentMartingale < MaxMartingale)
                             ApplyMartingaleEffect();
                         else
                             ResetMartingaleVariables();
@@ -353,8 +358,9 @@ namespace cAlgo
             if (AutomaticMoneyManagementFlag == true)
                 AutomateMoneyManagement();
 
-            // Saving volume multiplier state.
+            // Saving volume multiplier state and updating number of martingales.
             WriteToBinaryFile(volume_file, VolumeMultiplier);
+            ++CurrentMartingale;
         }
 
         private void AutomateMoneyManagement()
@@ -454,6 +460,7 @@ namespace cAlgo
             TakeProfit = InitialTakeProfit;
             CycleOverridenFlag = false;
             FirstPositionFlag = true;
+            CurrentMartingale = 0;
             if (AutomaticMoneyManagementFlag == true)
                 AutomateMoneyManagement();
         }
