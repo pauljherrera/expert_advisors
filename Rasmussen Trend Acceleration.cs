@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using System.Collections.Generic;
 using cAlgo.API;
 using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
@@ -8,69 +9,137 @@ using cAlgo.Indicators;
 namespace cAlgo
 {
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
-    public class RasmussenTrendAcceleration : Robot
+    public class TrendAcceleration : Robot
     {
-        /*
-        Indicaciones generales:
-        - Este bot busca captar los aumentos de la velocidad en el mercado. Como se necesita medir
-        la aceleración por segundos y no por minutos, no se puede usar OnBar() para esto.
-        - El bot calculará cada X segundos cuántos pips se ha movido el precio. Partiendo de 
-        ahí, calculara la velocidad del mercado en pips por segundo. La velocidad del mercado
-        toma números negativos cuando el precio es bajista.
-        - Partiendo de la velocidad del mercado también se calculará la aceleración del mercado. Por
-        ejemplo, si la velocidad anterior era de 2 pips/segundo y la velocidad actual es de 3 pips
-        por segundo, se dirá que la aceleración del mercado es de 1.5 (Es decir, 1.5 veces la medida anterior)
-        - El usuario establecerá un umbral Y de aceleración. Cuando el umbral Y se alcanza o traspasa, el bot
-        entra en la fase de dos.
-        - Para la fase 2, el usuario elige un tiempo Z. Cuando la aceleración del mercado sea 
-        igual a Y por Z segundos, el bot entrará en la dirección del mercado.
-        - La dirección del mercado se determinará según el signo de la velocidad del mercado.
-        - Para salir del mercado, se utilizarán los mismos parámetros, pero en vez de captar una aceleración
-        del mercado, se busca captar una desaceleración del mercado. El usuario también puede elegir los 
-        segundos de medición Xsalida, el umbral de aceleración Ysalida y el tiempo de aceleración Zsalida.
-        
-        */
+        [Parameter("Evaluation Time in seconds", DefaultValue = 15)]
+        public int EvaluationTime { get; set; }
 
-        [Parameter(DefaultValue = 0.0)]
-        public double Parameter { get; set; }
+        [Parameter("Phase 2 Acceleration Threshold", DefaultValue = 1.5)]
+        public double Phase2AccelerationThreshold { get; set; }
 
-        /*Parámetros del usuario: 
-        - Entry Evaluation Time.
-        - Entry Acceleration Threshold.
-        - Entry Acceleration Time.
-        - Exit Evaluation Time.
-        - Exit Acceleration Threshold.
-        - Exit Acceleration Time.   */
+        [Parameter("Entry Acceleration Threshold", DefaultValue = 1.5)]
+        public double EntryAccelerationThreshold { get; set; }
+
+        [Parameter("Entry Acceleration Periods", DefaultValue = 1, MinValue = 0)]
+        public int EntryAccelerationPeriods { get; set; }
+
+        [Parameter("Exit Acceleration Threshold", DefaultValue = 0.5)]
+        public double ExitAccelerationThreshold { get; set; }
+
+        [Parameter("Exit Acceleration Periods", DefaultValue = 1, MinValue = 0)]
+        public int ExitAccelerationPeriods { get; set; }
+
+        [Parameter("Volume (Lots)", DefaultValue = 1, MinValue = 0.01, Step = 0.01)]
+        public double Volume { get; set; }
+
+        private double Acceleration = 0;
+        private double PreviousPrice;
+        private double CurrentPrice;
+        private double PreviousSpeed = 0;
+        private double CurrentSpeed = 0;
+        private double BaseSpeed = 0;
+        private int EntryAccelerationPeriodsCounter = -1;
+        private int ExitAccelerationPeriodsCounter = -1;
+        private bool Phase2Flag = false;
+        private Position OpenPosition;
+
 
         protected override void OnStart()
         {
-            // Put your initialization logic here
+            // Initializing the OnTimer method.
+            Timer.Start(EvaluationTime);
+
+            // Setting initial values.
+            PreviousPrice = MarketSeries.Close.LastValue;
         }
 
-        protected override void OnTick()
+        protected override void OnTimer()
         {
-            //Si no se está en el mercado.
+            // Getting price, speed and acceleration.
+            CurrentPrice = MarketSeries.Close.LastValue;
+            CurrentSpeed = (CurrentPrice - PreviousPrice) / EvaluationTime * Math.Pow(10, Symbol.Digits);
+            Acceleration = CurrentSpeed / PreviousSpeed;
 
-            // Evaluar si ya pasaron los X segundos para la siguiente evaluacion.
+            // Checking if the acceleration threshold was trespassed.
+            if (Acceleration > Phase2AccelerationThreshold && Phase2Flag == false)
+            {
+                BaseSpeed = PreviousSpeed;
+                Phase2Flag = true;
+            }
+            Print("Acceleration: {0}", Acceleration);
+            Print("Phase 2 flag: {0}", Phase2Flag);
+            // Phase 2 logic.
+            if (Phase2Flag == true)
+            {
+                // Acceleration compared with the base price.
+                var Phase2Acceleration = CurrentSpeed / BaseSpeed;
 
-            //Si ya pasó el tiempo: calcular cuántos pips se movió el mercado, comparar con la velocidad
-            //anterior para calcular la aceleración.
+                // Increasing the periods.
+                if (OpenPosition == null)
+                    ++EntryAccelerationPeriodsCounter;
+                Print("Entry counter: {0}", EntryAccelerationPeriodsCounter);
+                // Entry logic.
+                if (EntryAccelerationPeriodsCounter >= EntryAccelerationPeriods)
+                {
+                    if (Phase2Acceleration >= EntryAccelerationThreshold)
+                    {
+                        // Getting the direction of the market.
+                        var _TradeType = CurrentSpeed > 0 ? TradeType.Buy : TradeType.Sell;
 
-            // Si la aceleración es suficiente, pasar a la fase dos.
+                        var Result = ExecuteMarketOrder(_TradeType, Symbol, Symbol.NormalizeVolume(Symbol.QuantityToVolume(Volume)));
+                        if (Result.IsSuccessful)
+                        {
+                            OpenPosition = Result.Position;
+                        }
+                    }
 
+                    // If the acceleration wasn't sustained, reset the variables.
+                    if (OpenPosition == null)
+                        Phase2Flag = false;
+                    EntryAccelerationPeriodsCounter = -1;
+                }
 
-            //Si se está en fase dos...
+                // Exit logic.
+                if (OpenPosition != null && Phase2Acceleration <= ExitAccelerationThreshold)
+                {
+                    ++ExitAccelerationPeriodsCounter;
 
-            //Calcular cuánto tiempo ha pasado desde que se está en fase dos.
+                    if (ExitAccelerationPeriodsCounter >= ExitAccelerationPeriods)
+                    {
+                        CloseOpenPosition();
+                    }
+                }
+                else
+                {
+                    ExitAccelerationPeriodsCounter = -1;
+                }
 
-            //Si el tiempo es mayor al estipulado por el usuario, entrar al mercado.
+                // Sanity check.
+                Print("Exit Counter: {0}", ExitAccelerationPeriodsCounter);
+                //Print("Current Price: {0}", CurrentPrice);
+                //Print("Acceleration: {0}", Acceleration);
 
-            //Si se está en el mercado, seguír la lógica contraria, buscando captar la desaceleración del mercado.
+            }
+
+            PreviousPrice = CurrentPrice;
+            PreviousSpeed = CurrentSpeed;
+
         }
 
         protected override void OnStop()
         {
-            // Put your deinitialization logic here
+
         }
+
+        private void CloseOpenPosition()
+        {
+            var Result = ClosePosition(OpenPosition);
+            OpenPosition = null;
+            Phase2Flag = false;
+            ExitAccelerationPeriodsCounter = -1;
+            EntryAccelerationPeriodsCounter = -1;
+            BaseSpeed = 0;
+        }
+
     }
 }
